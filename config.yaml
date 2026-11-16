@@ -42,6 +42,10 @@ deal_criteria:
   # RED com motivo `margem_anomala` (auditável) p/ verificação manual, em vez de
   # falso-GREEN. Vazio/ausente = sem teto (comportamento antigo).
   review_above_margin_pct: 2.0   # > 200% de margem bruta -> RED (margem_anomala)
+  # Plausibilidade da venda vs TCG (modo ebay_sold): mediana de venda > 1,5x a ref TCG
+  # e margem vs TCG abaixo do mínimo -> GREEN vira RED `ref_venda_descolada_tcg`;
+  # se a margem vs TCG ainda passa, fica GREEN com nota. Mesmo guard do perfil OP.
+  max_sell_ref_vs_tcg_ratio: 1.5
   # Validade da referência US (dias). Acima disso, GREEN é rebaixado p/ YELLOW
   # (revisão manual) — referência velha pode inflar margem em GREEN falso.
   # Operador (2026-08-15): SÓ dado do DIA — rode build_us_reference.py (e
@@ -59,18 +63,19 @@ sources:
   brazil:
     - Liga Pokémon
   usa:
-    - TCGPlayer
+    - eBay US (venda realizada, mediana 90d)   # classifica; TCGPlayer = informativo
 
 # ── ROTA (onde comprar → para onde vender) ────────────────────────────────
 # Rota = descrição auditável do fluxo real de capital do operador. É DADO de
 # configuração (labels + quais referências carregar), não comportamento: nada
-# aqui muda matching, margem oficial ou classificação (100% TCGplayer).
+# aqui muda matching ou margem oficial; a referência que classifica é a de
+# references.classification_source (ebay_sold = VENDA REALIZADA no eBay US).
 # Aparece no banner do scan, no run_meta.json do run e no cabeçalho da entrega.
 route:
   name: liga_to_ebay_us
-  label: "BR (Liga/OLX/ML/Amazon) → venda eBay US via Probstein · classificação vs TCGplayer"
+  label: "BR (Liga/OLX/ML/Amazon) → venda eBay US via Probstein · classificação vs VENDA REALIZADA no eBay (mediana 90d)"
   # A referência que CLASSIFICA (GREEN/YELLOW/RED) — não mudar sem decisão do operador.
-  sell_reference: "TCGplayer Market via tcgcsv.com"
+  sell_reference: "eBay US venda realizada (mediana 90d, produto em inglês) via build_sold_reference.py"
   # Referências EXTRAS do lado de venda — INFORMATIVAS (colunas/links a mais na
   # entrega; nunca entram na margem oficial nem na classificação).
   extra_sell_references:
@@ -87,7 +92,25 @@ route:
 
 # Caminhos das referências de preço (permite perfis por jogo; ausente = default).
 references:
-  us_file: data/us_reference.json
+  us_file: data/us_reference.json   # TCGplayer: agora só INFORMATIVO (Ref. TCG + margem vs TCG)
+  # Operador 2026-11-16: "preço no TCGplayer não é referência de venda, eBay vende
+  # muito barato" — a CLASSIFICAÇÃO usa a VENDA REALIZADA no eBay US (mediana de
+  # 90 dias, data/sold_reference.json via build_sold_reference.py). Amostra fina
+  # (n < sold_reference.min_sales_for_green) e fallback no menor anúncio ativo
+  # (ebay_file) nunca são GREEN. Valores aceitos: tcg | ebay | ebay_sold.
+  classification_source: ebay_sold
+  sold_file: data/sold_reference.json
+  ebay_file: data/ebay_reference.json
+
+# Referência de VENDA REALIZADA (lib/sold_reference.py).
+sold_reference:
+  window_days: 90            # vendas dos últimos N dias (fronteira inclusiva)
+  min_sales_for_green: 2     # n < 2 = amostra fina -> nunca GREEN (YELLOW)
+  fallback_to_active_bin: true   # SKU sem venda -> menor anúncio ativo, MARCADO, nunca GREEN
+  require_us: true           # só venda nos EUA entra na mediana
+  collect_sold_page: true    # coletar a página de vendidos do eBay (Chrome logado)
+  login_wait_s: 180          # espera pelo login do operador na 1ª página
+  store_file: data/history/ebay_sold.jsonl
 
 liga:
   # Usado por --source liga (liga_adapter.py). A Liga bloqueia IP de

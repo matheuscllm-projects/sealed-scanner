@@ -71,6 +71,14 @@ def test_run_malformed_price_is_red_never_green(tmp_path, monkeypatch):
     ref["captured_at"] = S.datetime.now(S.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     (tmp_path / "data" / "us_reference.json").write_text(json.dumps(ref), encoding="utf-8")
 
+    # Operador 2026-11-16: o perfil Pokémon classifica pela VENDA REALIZADA
+    # (classification_source: ebay_sold) — referência de venda PINADA (n=3, GREEN
+    # robusto); o us_reference acima vira só informativo (Ref. TCG).
+    (tmp_path / "data" / "sold_reference.json").write_text(
+        json.dumps({"captured_at": ref["captured_at"], "min_sales_for_green": 2, "entries": {SKU_ID: {
+            "usd": 200.0, "n": 3, "status": "ok", "thin": False, "last_sold": "2026-11-10",
+            "url": "https://www.ebay.com/itm/111111111111"}}}), encoding="utf-8")
+
     listings = [
         {"id": "GOOD", "title": TITLE, "price_brl": 500.0, "seller": "v", "url": "u"},
         {"id": "BAD", "title": TITLE, "price_brl": "R$ 100", "seller": "v", "url": "u"},

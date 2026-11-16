@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import run_liga_local  # noqa: E402
 
 
-def test_refresh_roda_os_dois_builders_na_ordem_certa():
+def test_refresh_roda_os_builders_na_ordem_certa():
     chamadas = []
 
     def fake_runner(cmd, **kwargs):
@@ -32,9 +32,12 @@ def test_refresh_roda_os_dois_builders_na_ordem_certa():
 
     res = run_liga_local.refresh_references("pokemon", runner=fake_runner)
 
+    # Pokémon classifica pela VENDA REALIZADA (ebay_sold): a ordem é TCG (informativa)
+    # -> BIN ativo (fallback) -> venda realizada (coleta + agregação), que lê as outras.
     assert [Path(c[1]).name for c in chamadas] == [
-        "build_us_reference.py",      # CLASSIFICA — vem primeiro
-        "build_ebay_reference.py",    # informativa (lado de venda)
+        "build_us_reference.py",
+        "build_ebay_reference.py",
+        "build_sold_reference.py",
     ]
     # o perfil de jogo é repassado aos dois builders
     for cmd in chamadas:
@@ -49,6 +52,9 @@ def test_refresh_repassa_o_game_onepiece():
     )
     for cmd in chamadas:
         assert cmd[2:] == ["--game", "onepiece"]
+    # One Piece segue classificando pelo TCG: SEM o builder de venda realizada.
+    assert [Path(c[1]).name for c in chamadas] == [
+        "build_us_reference.py", "build_ebay_reference.py"]
 
 
 def test_builder_com_codigo_de_erro_nao_derruba_o_scan():
@@ -69,7 +75,10 @@ def test_refresh_usa_timeout_para_nao_pendurar_a_entrega():
     run_liga_local.refresh_references(
         "pokemon", runner=lambda cmd, **kw: (vistos.append(kw.get("timeout")), 0)[1]
     )
-    assert vistos and all(t == run_liga_local.REFRESH_TIMEOUT_S for t in vistos)
+    assert vistos and all(t is not None for t in vistos)
+    # a coleta de vendidos (Chrome, ~1 página por SKU) tem teto maior que os builders de API
+    assert vistos[:2] == [run_liga_local.REFRESH_TIMEOUT_S] * 2
+    assert vistos[2] == run_liga_local.SOLD_REFRESH_TIMEOUT_S > run_liga_local.REFRESH_TIMEOUT_S
 
 
 @pytest.mark.parametrize("argv,esperado", [([], True), (["--no-refresh-refs"], False)])

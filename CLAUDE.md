@@ -226,6 +226,19 @@ Erros recorrentes (3 famílias — detalhe no manual):
   secundária/informativa nos dois (colunas + link `[eBay]`, nunca classifica).
   O guard `ref_venda_descolada_tcg` (PR #78) só roda no modo `ebay` — hoje
   INERTE, mantido no código p/ eventual retorno.
+- **PERFIL POKÉMON classifica pela VENDA REALIZADA (`classification_source:
+  ebay_sold`, operador 2026-11-16 — "preço no TCGplayer não é referência de
+  venda, eBay vende muito barato")**: SUPERSEDE o invariante 7 e o item acima só
+  para o Pokémon (One Piece segue `tcg`). Referência = mediana de 90 dias das
+  vendas do produto em inglês no eBay US (`build_sold_reference.py` →
+  `data/sold_reference.json`; store `data/history/ebay_sold.jsonl`, coleta da
+  página de vendidos no Chrome logado). Amostra fina (n < 2) e fallback no menor
+  anúncio ativo (marcado) nunca são GREEN (YELLOW); sem nada = RED
+  `sem_referencia_us`; o freshness guard vale igual. TCGplayer vira informativo
+  (`Ref. TCG`, `Margem vs TCG %`). Entrega: `[oferta] · [eBay vendido] · [TCG]`
+  (`[eBay ativo]` no fallback). Ordem dos builders no `run_liga_local.py`:
+  US → eBay → venda realizada. Porte de `ptbr-sealed-scanner` (sem o contador
+  "X sold" de anúncio ativo, que o `build_ebay_reference.py` daqui não coleta).
 - **Registry OP = 100% dados reais do tcgcsv** (gerado/ampliável por
   `scripts/gen_onepiece_registry.py`): escopo seed = PRB-01 (2024-11) → OP17;
   Case/DON!!/Dash/Bonus/lotes ficam FORA e contados. **ZERO alias PT de set**
