@@ -435,6 +435,17 @@ class ScanRow:
     ebay_margin_pct: float | None = None   # (eBay_BRL - BR) / BR — bruta, informativa
     ebay_url: str = ""
     ebay_status: str = ""             # ok / sem_referencia_ebay / status do builder
+    # ── Referência de VENDA REALIZADA (classification_source: ebay_sold) ─────
+    # `ref_kind`: venda_realizada (mediana 90d) ou bin_ativo_fallback (menor anúncio
+    # ativo, pedida — nunca GREEN). `sold_url` = venda mais recente (ou o anúncio
+    # ativo do fallback). TCGplayer vira informativo: tcg_ref_*.
+    ref_kind: str = ""
+    sold_n: int | None = None
+    sold_last: str = ""
+    sold_url: str = ""
+    tcg_ref_usd: float | None = None
+    tcg_ref_brl: float | None = None
+    tcg_margin_pct: float | None = None
 
 
 # --------------------------------------------------------------------------
@@ -793,21 +804,43 @@ CSV_COLUMNS = [
 ]
 
 
+# Colunas EXTRAS do modo `ebay_sold` (só aparecem nele — o CSV do perfil 'tcg'/One
+# Piece fica idêntico). "Preço US" passa a carregar a VENDA; o TCGplayer vai p/ cá.
+SOLD_CSV_COLUMNS = [
+    ("ref_kind", "Tipo de referência"),
+    ("sold_n", "Nº vendas"),
+    ("sold_last", "Última venda"),
+    ("sold_url", "Venda eBay URL"),
+    ("tcg_ref_usd", "Ref. TCG (US$)"),
+    ("tcg_ref_brl", "Ref. TCG (R$)"),
+    ("tcg_margin_pct", "Margem vs TCG %"),
+]
+
+
+def csv_columns(config: dict | None) -> list[tuple[str, str]]:
+    """Colunas do CSV/XLSX conforme o perfil: CSV_COLUMNS (+ SOLD_CSV_COLUMNS no
+    modo ebay_sold)."""
+    if config and classification_reference_source(config) == "ebay_sold":
+        return CSV_COLUMNS + SOLD_CSV_COLUMNS
+    return CSV_COLUMNS
+
+
 def cell_value(row: ScanRow, key: str):
     val = getattr(row, key)
     if val is None:
         return ""
-    if key in ("total_margin_pct", "us_discount_pct", "ebay_margin_pct"):
+    if key in ("total_margin_pct", "us_discount_pct", "ebay_margin_pct", "tcg_margin_pct"):
         return f"{val * 100:.2f}"
     return val
 
 
-def write_csv(rows: list[ScanRow], path: Path) -> None:
+def write_csv(rows: list[ScanRow], path: Path, columns: list | None = None) -> None:
+    columns = columns or CSV_COLUMNS
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow([label for _, label in CSV_COLUMNS])
+        writer.writerow([label for _, label in columns])
         for row in rows:
-            writer.writerow([cell_value(row, key) for key, _ in CSV_COLUMNS])
+            writer.writerow([cell_value(row, key) for key, _ in columns])
 
 
 # --------------------------------------------------------------------------
@@ -835,17 +868,17 @@ def write_xlsx(buckets: dict, config: dict, source_desc: str, path: Path) -> boo
 
     def add_sheet(name: str, rows: list[ScanRow]) -> None:
         ws = wb.create_sheet(name)
-        ws.append([label for _, label in CSV_COLUMNS])
+        ws.append([label for _, label in csv_columns(config)])
         for cell in ws[1]:
             cell.font = header_font
             cell.fill = header_fill
         for row in rows:
-            ws.append([cell_value(row, key) for key, _ in CSV_COLUMNS])
+            ws.append([cell_value(row, key) for key, _ in csv_columns(config)])
             fill = fills.get(row.deal_confidence)
             if fill:
                 for cell in ws[ws.max_row]:
                     cell.fill = fill
-        for idx, (key, label) in enumerate(CSV_COLUMNS, start=1):
+        for idx, (key, label) in enumerate(csv_columns(config), start=1):
             width = max(len(label) + 2, 14)
             if key in ("title_br", "sku_name", "main_risk", "recommended_action", "url"):
                 width = 42
@@ -907,21 +940,28 @@ def write_xlsx(buckets: dict, config: dict, source_desc: str, path: Path) -> boo
 # --------------------------------------------------------------------------
 # Orquestração
 # --------------------------------------------------------------------------
+REF_KIND_SOLD = "venda_realizada"
+REF_KIND_BIN_FALLBACK = "bin_ativo_fallback"
+DEFAULT_SOLD_FILE = "data/sold_reference.json"
+
+
 def classification_reference_source(config: dict) -> str:
     """Fonte da referência que CLASSIFICA (margem/GREEN): 'tcg' (default,
-    comportamento histórico) ou 'ebay' (menor anúncio ATIVO no eBay US).
+    comportamento histórico: One Piece), 'ebay' (menor anúncio ATIVO no eBay US) ou
+    'ebay_sold' (VENDA REALIZADA no eBay US, mediana 90d — perfil Pokémon desde
+    2026-11-16: "preço no TCGplayer não é referência de venda, eBay vende muito
+    barato"). Chave ausente/inválida = 'tcg'.
 
-    Operador 2026-08-15: no perfil One Piece a referência única passa a ser o
-    eBay ('para one piece vamos tomar como referência eBay apenas') — o
-    TCGplayer da categoria 68 descolava do mercado real de venda. Pokémon
-    segue TCGplayer (config sem a chave = 'tcg', nada muda)."""
+    Histórico: 2026-08-15 o perfil OP virou 'ebay'; 2026-09-02 voltou a 'tcg'."""
     src = str((config.get("references") or {}).get("classification_source") or "tcg").lower()
-    return src if src in ("tcg", "ebay") else "tcg"
+    return src if src in ("tcg", "ebay", "ebay_sold") else "tcg"
 
 
 def classification_reference_label(config: dict) -> str:
-    return ("eBay US (menor anúncio ativo)"
-            if classification_reference_source(config) == "ebay" else "TCGPlayer")
+    src = classification_reference_source(config)
+    if src == "ebay_sold":
+        return "eBay US (venda realizada, mediana 90d)"
+    return "eBay US (menor anúncio ativo)" if src == "ebay" else "TCGPlayer"
 
 
 def load_classification_reference(config: dict, script_dir: Path) -> tuple[dict, dict]:
@@ -929,10 +969,12 @@ def load_classification_reference(config: dict, script_dir: Path) -> tuple[dict,
 
     Retorna (ref_data, prices): `prices` = {sku_id: usd} e `ref_data` carrega o
     `captured_at` — o freshness guard (apply_freshness_downgrade) é o MESMO nos
-    dois modos. No modo 'ebay' só entram SKUs com status 'ok' e preço; SKU sem
+    modos. No modo 'ebay' só entram SKUs com status 'ok' e preço; SKU sem
     anúncio plausível fica SEM referência -> RED sem_referencia_us (honesto,
     nunca inventamos preço)."""
     refs = config.get("references") or {}
+    if classification_reference_source(config) == "ebay_sold":
+        return load_sold_classification_reference(config, script_dir)
     if classification_reference_source(config) == "ebay":
         rel = refs.get("ebay_file") or ebay_reference_settings(config)["reference_file"]
         ref_data = load_json(script_dir / rel, rel)
@@ -947,10 +989,57 @@ def load_classification_reference(config: dict, script_dir: Path) -> tuple[dict,
     return ref_data, ref_data.get("prices", {})
 
 
+def load_sold_classification_reference(config: dict, script_dir: Path) -> tuple[dict, dict]:
+    """Modo `ebay_sold`: a referência que CLASSIFICA é a VENDA REALIZADA
+    (data/sold_reference.json, lib/sold_reference — mediana na janela).
+    SKU sem nenhuma venda cai no menor BIN ativo (ebay_reference.json) como
+    FALLBACK marcado (`ref_kind: bin_ativo_fallback`; `sold_reference.
+    fallback_to_active_bin`, default True) — classifica, mas apply_sold_reference_
+    guards nunca deixa GREEN. Sem nenhum dos dois: sem entrada -> RED
+    sem_referencia_us. Arquivos ausentes = vazio honesto (aviso), nunca sys.exit.
+    Nunca inventa preço."""
+    from lib.sold_reference import sold_ref_cfg
+
+    refs = config.get("references") or {}
+    c = sold_ref_cfg(config)
+    sold_rel = refs.get("sold_file") or DEFAULT_SOLD_FILE
+    bin_rel = refs.get("ebay_file") or ebay_reference_settings(config)["reference_file"]
+    sold = load_json_optional(script_dir / sold_rel)
+    bin_data = load_json_optional(script_dir / bin_rel) or {}
+    if sold is None:
+        print(f"  [aviso] referência de venda realizada ausente ({sold_rel}) — rode "
+              "build_sold_reference.py; neste scan só o menor BIN ativo (fallback, nunca GREEN).")
+    entries: dict[str, dict] = {}
+    for sid, e in ((sold or {}).get("entries") or {}).items():
+        if not isinstance(e, dict) or e.get("status") != "ok" or not e.get("usd"):
+            continue
+        entries[sid] = {
+            "usd": float(e["usd"]), "url": e.get("url") or "", "status": "ok",
+            "ref_kind": REF_KIND_SOLD, "sold_n": int(e.get("n") or 0),
+            "last_sold": e.get("last_sold") or "", "thin": bool(e.get("thin")),
+        }
+    if c.get("fallback_to_active_bin", True):
+        for sid, b in (bin_data.get("entries") or {}).items():
+            if sid in entries or not isinstance(b, dict) or b.get("status") != "ok" or not b.get("usd"):
+                continue
+            entries[sid] = {
+                "usd": float(b["usd"]), "url": b.get("url") or "", "status": "ok",
+                "ref_kind": REF_KIND_BIN_FALLBACK, "sold_n": 0, "last_sold": "", "thin": True,
+            }
+    ref_data = {
+        "captured_at": (sold or {}).get("captured_at") or bin_data.get("captured_at") or "",
+        "entries": entries,
+        "min_sales_for_green": int((sold or {}).get("min_sales_for_green") or c.get("min_sales_for_green") or 2),
+        "_missing_sold": sold is None,
+    }
+    prices = {sid: e["usd"] for sid, e in entries.items()}
+    return ref_data, prices
+
+
 def reference_rebuild_hint(config: dict) -> str:
     """Comando certo p/ refrescar a referência de classificação (mensagens)."""
-    return ("build_ebay_reference.py"
-            if classification_reference_source(config) == "ebay" else "build_us_reference.py")
+    return {"ebay_sold": "build_sold_reference.py", "ebay": "build_ebay_reference.py"}.get(
+        classification_reference_source(config), "build_us_reference.py")
 
 
 def reference_age_days(captured_at: str | None) -> int | None:
@@ -1187,6 +1276,86 @@ def load_and_apply_ebay(rows: list, config: dict, script_dir: Path) -> tuple[dic
     return ebay_data, stats
 
 
+RISK_AMOSTRA_FINA = ("Referência de venda com amostra fina ({n} venda(s) < {min_n}) — a mediana pode não "
+                     "representar o mercado; conferir as vendas no eBay antes de comprar")
+ACTION_AMOSTRA_FINA = "Conferir as vendas realizadas no eBay (link) antes de comprar"
+RISK_REF_PEDIDA = ("Sem venda realizada no eBay US: referência é o menor anúncio ATIVO (US$ {usd:.2f}) — "
+                   "pedida, não venda; conferir o preço real de venda antes de comprar")
+ACTION_REF_PEDIDA = "Conferir vendas recentes do produto no eBay antes de comprar"
+
+
+def apply_sold_reference_guards(rows: list, ref_data: dict | None, config: dict) -> dict:
+    """Modo `ebay_sold`: GREEN só com VENDA REALIZADA e amostra suficiente.
+      - referência de fallback no BIN ativo (pedida) -> YELLOW review_required;
+      - venda realizada com n < min_sales_for_green -> YELLOW review_required.
+    RED/YELLOW e a margem oficial ficam intocados (é confiança, não preço — mesmo
+    padrão do freshness guard). No-op fora do modo ebay_sold. Retorna contadores."""
+    stats = {"bin_fallback": 0, "amostra_fina": 0}
+    if classification_reference_source(config) != "ebay_sold":
+        return stats
+    entries = (ref_data or {}).get("entries") or {}
+    min_n = int((ref_data or {}).get("min_sales_for_green") or 2)
+    for row in rows:
+        if not row.sku_id or row.deal_confidence != "GREEN":
+            continue
+        e = entries.get(row.sku_id)
+        if not e or e.get("status") != "ok":
+            continue
+        kind = e.get("ref_kind") or ""
+        if kind == REF_KIND_BIN_FALLBACK:
+            row.deal_confidence = "YELLOW"
+            row.bucket = "review_required"
+            row.main_risk = RISK_REF_PEDIDA.format(usd=float(e.get("usd") or 0.0))
+            row.recommended_action = ACTION_REF_PEDIDA
+            stats["bin_fallback"] += 1
+        elif kind == REF_KIND_SOLD and int(e.get("sold_n") or 0) < min_n:
+            row.deal_confidence = "YELLOW"
+            row.bucket = "review_required"
+            row.main_risk = RISK_AMOSTRA_FINA.format(n=int(e.get("sold_n") or 0), min_n=min_n)
+            row.recommended_action = ACTION_AMOSTRA_FINA
+            stats["amostra_fina"] += 1
+    return stats
+
+
+def load_and_apply_sold(rows: list, ref_data: dict | None, config: dict,
+                        script_dir: Path) -> dict | None:
+    """Caminho ÚNICO (single-source e orquestrador) do modo `ebay_sold`: aplica os
+    guards de confiança e materializa nas linhas o tipo de referência, nº de vendas,
+    link da venda (ou do anúncio ativo do fallback) e o TCGplayer INFORMATIVO
+    (us_file: preço, R$ e margem bruta vs TCG). Não muda classificação além dos
+    guards. No-op (None) fora do modo ebay_sold. Roda ANTES do freshness guard."""
+    if classification_reference_source(config) != "ebay_sold":
+        return None
+    guards = apply_sold_reference_guards(rows, ref_data, config)
+    entries = (ref_data or {}).get("entries") or {}
+    refs = config.get("references") or {}
+    tcg = load_json_optional(script_dir / (refs.get("us_file") or "data/us_reference.json")) or {}
+    tcg_prices = tcg.get("prices") or {}
+    fx = config["currency"]["usd_brl"]
+    stats = {"venda": 0, "bin_fallback": 0, "sem": 0, **guards}
+    for row in rows:
+        if not row.sku_id:
+            continue
+        e = entries.get(row.sku_id)
+        if e and e.get("status") == "ok":
+            row.ref_kind = e.get("ref_kind") or ""
+            row.sold_n = int(e.get("sold_n") or 0)
+            row.sold_last = e.get("last_sold") or ""
+            row.sold_url = e.get("url") or ""
+            stats["venda" if row.ref_kind == REF_KIND_SOLD else "bin_fallback"] += 1
+        else:
+            stats["sem"] += 1
+        t = tcg_prices.get(row.sku_id)
+        if t:
+            row.tcg_ref_usd = float(t)
+            row.tcg_ref_brl, row.tcg_margin_pct = compute_ebay_margin(row.price_brl, float(t), fx)
+    print(f"  [venda] referência de venda realizada: {stats['venda']} linhas com venda · "
+          f"{stats['bin_fallback']} em fallback (BIN ativo, nunca GREEN) · {stats['sem']} sem referência · "
+          f"{guards['amostra_fina']} GREEN->YELLOW por amostra fina · "
+          f"{guards['bin_fallback']} GREEN->YELLOW por fallback")
+    return stats
+
+
 def run(args: argparse.Namespace) -> int:
     config = load_yaml(Path(args.config), "config.yaml")
     game = resolve_game(args, config)
@@ -1256,6 +1425,10 @@ def run(args: argparse.Namespace) -> int:
     # rebaixamento GREEN->YELLOW de referência velha.
     load_and_apply_sell_ref_guard(rows, config, SCRIPT_DIR)
 
+    # Modo ebay_sold: guards de confiança (amostra fina / fallback nunca GREEN) +
+    # colunas de venda/TCG informativo — ANTES do freshness.
+    load_and_apply_sold(rows, ref_data, config, SCRIPT_DIR)
+
     # Freshness guard — referência US velha pode inflar margem em GREEN falso (o
     # modo de falha histórico dos tins). Acima da validade, rebaixa GREEN->YELLOW
     # (revisão manual). FP-safe: nunca cria deal, só pede conferência do preço atual.
@@ -1288,7 +1461,7 @@ def run(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for key in buckets:
-        write_csv(buckets[key], out_dir / f"{key}.csv")
+        write_csv(buckets[key], out_dir / f"{key}.csv", csv_columns(config))
 
     xlsx_path = out_dir / f"sealed_scan_{stamp}.xlsx"
     xlsx_ok = write_xlsx(buckets, config, source_desc, xlsx_path)
