@@ -185,3 +185,37 @@ def test_csv_escreve_colunas_de_venda(tmp_path):
     head = p.read_text(encoding="utf-8").splitlines()[0]
     for col in ("Venda eBay URL", "Nº vendas", "Ref. TCG (US$)", "Margem vs TCG %", "Tipo de referência"):
         assert col in head
+
+
+def test_orquestrador_ebay_sold_fim_a_fim(tmp_path, monkeypatch):
+    """run_all_sources com o config REAL do Pokémon: colunas de venda no unified CSV,
+    amostra fina -> YELLOW, SKU com venda sólida -> GREEN, run_meta com o modo."""
+    import argparse
+    import csv
+
+    import run_all_sources as ORQ
+
+    monkeypatch.setattr(S, "resolve_fx_rate", lambda cfg: "manual (test)")
+    monkeypatch.setattr(ORQ, "SCRIPT_DIR", tmp_path)
+    (tmp_path / "data").mkdir()
+    sold = _sold(200.0, 1)                                   # n=1: amostra fina
+    sold["entries"]["ssp-etb-en"] = {**sold["entries"][SKU], "n": 3, "thin": False}
+    (tmp_path / "data" / "sold_reference.json").write_text(json.dumps(sold), encoding="utf-8")
+    (tmp_path / "data" / "us_reference.json").write_text(
+        json.dumps({"captured_at": _now_iso(), "prices": {SKU: 300.0, "ssp-etb-en": 100.0}}), encoding="utf-8")
+    listings = [{"id": "THIN", "title": "Surging Sparks Booster Box (English)", "price_brl": 500.0, "seller": "v", "url": "u"},
+                {"id": "SOLID", "title": "Surging Sparks Elite Trainer Box (English)", "price_brl": 500.0,
+                 "seller": "v", "url": "u2"}]
+    mock = tmp_path / "l.json"
+    mock.write_text(json.dumps({"listings": listings}), encoding="utf-8")
+    args = argparse.Namespace(sources="mock", mock=str(mock), config=str(ROOT / "config.yaml"),
+                              registry=str(ROOT / "sku_registry.yaml"))
+    assert ORQ.run(args) == 0
+    out = sorted((tmp_path / "results").glob("unified_*/"))[-1]
+    rows = {r["ID Anúncio"]: r for r in csv.DictReader((out / "unified_deals.csv").open(encoding="utf-8"))}
+    assert rows["THIN"]["Confiança do deal"] == "YELLOW" and rows["THIN"]["Nº vendas"] == "1"
+    assert rows["SOLID"]["Confiança do deal"] == "GREEN"
+    assert rows["SOLID"]["Venda eBay URL"] == "https://www.ebay.com/itm/111111111111"
+    assert float(rows["THIN"]["Ref. TCG (US$)"]) == 300.0
+    meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["classification_reference"] == "ebay_sold"
