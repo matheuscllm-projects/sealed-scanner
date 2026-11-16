@@ -309,3 +309,21 @@ def test_no_collect_sem_carimbo_nem_store_fica_vencida(tmp_path, monkeypatch):
     argv, out, store = _setup_builder(tmp_path, monkeypatch, lambda url: ("t", "u", HTML_EMPTY))
     assert BS.main(argv + ["--no-collect"]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["captured_at"].startswith("1970-")
+
+
+def test_best_offer_aceita_fica_fora_e_titulo_sem_sufixo_de_acessibilidade():
+    # Página real (2026-11-16): "Best offer accepted" mostra o preço de LISTA
+    # riscado — o valor pago não aparece, então a venda não entra na mediana.
+    html = """<ul>
+<li class="s-card"><div class="s-card__title">Pokemon Perfect Order Elite Trainer Box Opens in a new window or tab</div>
+<span class="su-styled-text positive strikethrough large-1 s-card__price">$94.40</span>
+<span class="su-styled-text secondary large">Best offer accepted</span>
+<div class="s-card__caption"><span>Sold Nov 15, 2026</span></div>
+<a class="su-link" href="https://www.ebay.com/itm/111111111111">x</a></li>
+<li class="s-card"><div class="s-card__title">Pokemon Perfect Order Elite Trainer Box Opens in a new window or tab</div>
+<span class="su-styled-text positive large-1 s-card__price">$70.00</span>
+<div class="s-card__caption"><span>Sold Nov 15, 2026</span></div>
+<a class="su-link" href="https://www.ebay.com/itm/222222222222">x</a></li></ul>"""
+    items = BS.parse_sold_search_html(html)
+    assert [i["item_id"] for i in items] == ["222222222222"]
+    assert items[0]["title"] == "Pokemon Perfect Order Elite Trainer Box"

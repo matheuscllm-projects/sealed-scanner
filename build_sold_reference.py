@@ -178,7 +178,14 @@ def parse_sold_search_html(html: str) -> list[dict]:
         item_id = m.group(1)
         title = _text(li.select_one(".s-item__title, .s-card__title"))
         title = re.sub(r"^(?:new listing|novo anúncio)\s*", "", title, flags=re.I).strip()
+        title = re.sub(r"\s*(?:opens in a new window or tab|abre em uma nova janela ou guia)\s*$",
+                       "", title, flags=re.I).strip()
         if not title or title.lower() in _PLACEHOLDER_TITLES:
+            continue
+        # "Best offer accepted": o eBay mostra o preço de LISTA riscado, não o
+        # valor pago — sem preço real, não entra (visto na página real 2026-11-16).
+        if (li.select_one(".s-card__price.strikethrough, .s-item__price .STRIKETHROUGH")
+                or re.search(r"best offer accepted|oferta aceita", _text(li), re.I)):
             continue
         price = parse_usd_text(_text(li.select_one(".s-item__price, .s-card__price")))
         caption = _text(li.select_one(".s-item__caption, .s-card__caption"))
@@ -245,7 +252,10 @@ class SoldPageBrowser:
         while time.time() < deadline:
             time.sleep(poll_s)
             try:
-                if not is_blocked_page(page.title(), page.url):
+                # só vale quando VOLTOU à busca: o login passa por páginas
+                # intermediárias (2 etapas, passkey) que não são "signin" e
+                # liberavam a espera cedo demais (visto em 2026-11-16).
+                if "/sch/" in page.url and not is_blocked_page(page.title(), page.url):
                     return True
             except Exception:  # noqa: BLE001
                 pass
