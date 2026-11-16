@@ -43,6 +43,7 @@ def _config_ebay(ratio=1.5):
 
 def _config_tcg():
     config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["references"]["classification_source"] = "tcg"   # Pokémon real agora é ebay_sold
     config["currency"]["usd_brl"] = 5.0
     config["deal_criteria"]["max_sell_ref_vs_tcg_ratio"] = 1.5
     return config
@@ -249,3 +250,40 @@ def test_config_onepiece_tem_ratio_default():
     config = yaml.safe_load((ROOT / "config_onepiece.yaml").read_text(encoding="utf-8"))
     ratio = config["deal_criteria"].get("max_sell_ref_vs_tcg_ratio")
     assert ratio is not None and 1.0 < float(ratio) <= 3.0
+
+
+# ── modo ebay_sold (Pokémon, 2026-11-16): o guard também vale p/ a mediana de venda ──
+def _config_sold(ratio=1.5):
+    config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    assert config["references"]["classification_source"] == "ebay_sold"
+    config["currency"]["usd_brl"] = 5.0
+    config["deal_criteria"]["max_sell_ref_vs_tcg_ratio"] = ratio
+    return config
+
+
+def test_config_pokemon_tem_ratio_1_5():
+    config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    assert config["deal_criteria"]["max_sell_ref_vs_tcg_ratio"] == 1.5
+
+
+def test_guard_ebay_sold_rebaixa_venda_descolada_do_tcg_para_red():
+    row = _green_row(price_brl=208.0, ebay_usd=78.5)           # venda 78.5 > 1.5 x 38.01
+    stats = S.apply_sell_ref_plausibility_guard([row], {SKU_ID: 38.01}, _config_sold())
+    assert stats["downgraded"] == 1
+    assert row.deal_confidence == "RED" and row.reject_reason == "ref_venda_descolada_tcg"
+
+
+def test_guard_ebay_sold_mantem_green_com_nota_se_margem_vs_tcg_passa():
+    row = _green_row(price_brl=100.0, ebay_usd=78.5)           # margem vs TCG 38.01*5 = 190 -> 90%
+    stats = S.apply_sell_ref_plausibility_guard([row], {SKU_ID: 38.01}, _config_sold())
+    assert stats["kept_with_note"] == 1 and row.deal_confidence == "GREEN"
+
+
+def test_wrapper_ebay_sold_roda_com_us_file(tmp_path):
+    import json
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "us_reference.json").write_text(
+        json.dumps({"prices": {SKU_ID: 38.01}}), encoding="utf-8")
+    row = _green_row(price_brl=208.0, ebay_usd=78.5)
+    stats = S.load_and_apply_sell_ref_guard([row], _config_sold(), tmp_path)
+    assert stats is not None and stats["downgraded"] == 1

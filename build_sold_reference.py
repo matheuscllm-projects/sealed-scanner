@@ -32,6 +32,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
@@ -338,8 +339,39 @@ def store_path_for(config: dict, root: Path) -> Path:
     return Path(rel) if Path(rel).is_absolute() else root / rel
 
 
-def build(config: dict, *, root: Path, now=None, log=print) -> dict:
-    """Agrega o store de vendidos -> dict da referência de venda."""
+EPOCH_ISO = "1970-01-01T00:00:00Z"
+
+
+def last_collect_path(store_path: Path) -> Path:
+    return store_path.with_name(store_path.stem + ".last_collect.json")
+
+
+def write_last_collect(store_path: Path, stamp: str) -> None:
+    """Carimbo da última coleta BEM-SUCEDIDA (o `captured_at` da referência)."""
+    p = last_collect_path(store_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"collected_at": stamp}), encoding="utf-8")
+
+
+def read_last_collect(store_path: Path) -> str:
+    """Última coleta bem-sucedida: carimbo próprio; senão o maior `collected_at` de
+    registro da página de vendidos no store; senão EPOCH (idade desconhecida = vencida,
+    nunca "fresca" — o freshness guard rebaixa GREEN)."""
+    try:
+        stamp = (json.loads(last_collect_path(store_path).read_text(encoding="utf-8")) or {}).get("collected_at")
+        if stamp:
+            return str(stamp)
+    except (OSError, ValueError):
+        pass
+    recs = SR.load_store_records(store_path) if store_path.exists() else []
+    stamps = [r.get("collected_at") for r in recs
+              if r.get("source_type") == SOURCE_TYPE_PAGE and r.get("collected_at")]
+    return max(stamps) if stamps else EPOCH_ISO
+
+
+def build(config: dict, *, root: Path, now=None, log=print, captured_at: str | None = None) -> dict:
+    """Agrega o store de vendidos -> dict da referência de venda. `captured_at` =
+    data da coleta (não a hora do build): venda velha nunca vira referência "fresca"."""
     c = SR.sold_ref_cfg(config)
     store_path = store_path_for(config, root)
     recs = SR.load_store_records(store_path) if store_path.exists() else []
@@ -347,6 +379,8 @@ def build(config: dict, *, root: Path, now=None, log=print) -> dict:
         log(f"  [sold-ref] aviso: store de vendidos ausente ({store_path}) — referência vazia.")
     sales = SR.realized_sales_from_store(recs, now, int(c["window_days"]))
     ref = SR.aggregate_sold_reference(sales, now, c)
+    if captured_at:
+        ref["captured_at"] = captured_at
     if ref.get("skipped_no_url"):
         log(f"  [sold-ref] {len(ref['skipped_no_url'])} SKU(s) com venda mas sem NENHUM link na fonte "
             f"— fora da referência (entrega exige link): {', '.join(ref['skipped_no_url'])}")
@@ -395,12 +429,14 @@ def main(argv: list[str] | None = None) -> int:
     print("  REFERÊNCIA DE VENDA REALIZADA (eBay US, inglês) — build")
     print("=" * 64)
 
+    captured_at = None
+    store_path = store_path_for(config, SCRIPT_DIR)
     if collect:
         skus = load_skus(registry_path)
         if args.limit_skus:
             skus = skus[: args.limit_skus]
-        store_path = store_path_for(config, SCRIPT_DIR)
         browser = None
+        stats, failure = None, ""
         try:
             browser = SoldPageBrowser(headless=False)
             records, stats = collect_sold_pages(skus, browser, ipg=args.ipg, delay_s=args.delay,
@@ -411,19 +447,36 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  [sold-page] store: {st.summary()}")
             print(f"  [sold-page] páginas {stats['pages']}/{stats['skus']} · itens {stats['items']} · "
                   f"EN {stats['en']} · erros {stats['errors']}"
-                  + (" · BLOQUEADO (sem login) — coleta parcial/pulada" if stats["blocked"] else ""))
-        except Exception as exc:  # noqa: BLE001 — a agregação abaixo ainda roda
-            print(f"  [sold-page] aviso: coleta falhou ({type(exc).__name__}: {exc}) — agregando o que existe.")
+                  + (" · BLOQUEADO (sem login)" if stats["blocked"] else ""))
+            if stats["blocked"]:
+                failure = "eBay bloqueou/pediu login e a coleta não completou"
+            elif stats["pages"] == 0:
+                failure = "nenhuma página de vendidos foi lida"
+            elif stats["items"] == 0:
+                failure = "0 vendidos parseados em TODAS as páginas (layout do eBay mudou ou coleta quebrou)"
+        except Exception as exc:  # noqa: BLE001
+            failure = f"coleta falhou ({type(exc).__name__}: {exc})"
         finally:
             if browser is not None:
                 try:
                     browser.close()
                 except Exception:  # noqa: BLE001
                     pass
+        if failure:
+            # NÃO regrava a referência (a anterior mantém a data antiga e o freshness guard
+            # rebaixa GREEN) e NÃO avança o carimbo de coleta.
+            print(f"  ERRO: {failure} — {out_path.name} NÃO foi regravado "
+                  "(referência anterior mantida; GREEN será rebaixado quando vencer). "
+                  "Rode de novo com o Chrome visível e logado no eBay.")
+            return 2
+        captured_at = store_stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        write_last_collect(store_path, store_stamp)
     else:
-        print("  coleta da página de vendidos DESLIGADA (--no-collect) — só agregação.")
+        captured_at = read_last_collect(store_path)
+        print(f"  coleta da página de vendidos DESLIGADA (--no-collect) — só agregação; "
+              f"captured_at = última coleta registrada ({captured_at}).")
 
-    ref = build(config, root=SCRIPT_DIR, now=datetime.now(timezone.utc))
+    ref = build(config, root=SCRIPT_DIR, now=datetime.now(timezone.utc), captured_at=captured_at)
     write_reference(out_path, ref)
     n = len(ref["entries"])
     thin = sum(1 for e in ref["entries"].values() if e.get("thin"))

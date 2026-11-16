@@ -202,7 +202,7 @@ def test_orquestrador_ebay_sold_fim_a_fim(tmp_path, monkeypatch):
     sold["entries"]["ssp-etb-en"] = {**sold["entries"][SKU], "n": 3, "thin": False}
     (tmp_path / "data" / "sold_reference.json").write_text(json.dumps(sold), encoding="utf-8")
     (tmp_path / "data" / "us_reference.json").write_text(
-        json.dumps({"captured_at": _now_iso(), "prices": {SKU: 300.0, "ssp-etb-en": 100.0}}), encoding="utf-8")
+        json.dumps({"captured_at": _now_iso(), "prices": {SKU: 300.0, "ssp-etb-en": 180.0}}), encoding="utf-8")
     listings = [{"id": "THIN", "title": "Surging Sparks Booster Box (English)", "price_brl": 500.0, "seller": "v", "url": "u"},
                 {"id": "SOLID", "title": "Surging Sparks Elite Trainer Box (English)", "price_brl": 500.0,
                  "seller": "v", "url": "u2"}]
@@ -219,3 +219,55 @@ def test_orquestrador_ebay_sold_fim_a_fim(tmp_path, monkeypatch):
     assert float(rows["THIN"]["Ref. TCG (US$)"]) == 300.0
     meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["classification_reference"] == "ebay_sold"
+
+
+# ── fallback BIN sem URL não serve (revisão 2026-11-16) ────────────────────
+def test_bin_sem_url_nao_vira_fallback(tmp_path):
+    b = _bin(190.0)
+    b["entries"][SKU]["url"] = ""
+    _write(tmp_path, sold={"captured_at": _now_iso(), "entries": {}}, ebay=b)
+    row, ref = _run(tmp_path)
+    assert row.reject_reason == "sem_referencia_us" and SKU not in ref["entries"]
+
+
+def test_ebay_sold_toda_linha_com_referencia_tem_link_de_referencia(tmp_path, monkeypatch):
+    """Orquestrador + snapshot: linha com referência (venda OU fallback) sempre sai com
+    link eBay não vazio e [TCG]; fallback sem URL não existe (fica RED sem referência)."""
+    import argparse
+    import csv
+    import sys as _sys
+
+    import run_all_sources as ORQ
+    _sys.path.insert(0, str(ROOT / "scripts"))
+    import snapshot
+
+    monkeypatch.setattr(S, "resolve_fx_rate", lambda cfg: "manual (test)")
+    monkeypatch.setattr(ORQ, "SCRIPT_DIR", tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "sold_reference.json").write_text(json.dumps(
+        {"captured_at": _now_iso(), "min_sales_for_green": 2, "entries": {SKU: _sold()["entries"][SKU]}}),
+        encoding="utf-8")
+    (tmp_path / "data" / "ebay_reference.json").write_text(json.dumps({"captured_at": _now_iso(), "entries": {
+        "ssp-etb-en": {"usd": 100.0, "status": "ok", "url": "https://www.ebay.com/itm/333333333333"},
+        "ssp-bundle-en": {"usd": 50.0, "status": "ok", "url": ""}}}), encoding="utf-8")
+    (tmp_path / "data" / "us_reference.json").write_text(
+        json.dumps({"captured_at": _now_iso(), "prices": {SKU: 300.0}}), encoding="utf-8")
+    titles = {"A": "Surging Sparks Booster Box (English)", "B": "Surging Sparks Elite Trainer Box (English)",
+              "C": "Surging Sparks Booster Bundle (English)"}
+    mock = tmp_path / "l.json"
+    mock.write_text(json.dumps({"listings": [
+        {"id": k, "title": t, "price_brl": 400.0, "seller": "v", "url": "https://liga/" + k}
+        for k, t in titles.items()]}), encoding="utf-8")
+    args = argparse.Namespace(sources="mock", mock=str(mock), config=str(ROOT / "config.yaml"),
+                              registry=str(ROOT / "sku_registry.yaml"))
+    assert ORQ.run(args) == 0
+    out = sorted((tmp_path / "results").glob("unified_*/"))[-1]
+    rows = {r["ID Anúncio"]: r for r in csv.DictReader((out / "unified_deals.csv").open(encoding="utf-8"))}
+    assert rows["A"]["Tipo de referência"] == "venda_realizada" and rows["A"]["Venda eBay URL"]
+    assert rows["B"]["Tipo de referência"] == "bin_ativo_fallback" and rows["B"]["Venda eBay URL"]
+    assert rows["C"]["Tipo de referência"] == "" and rows["C"]["Motivo de rejeição"] == "sem_referencia_us"
+    for r in rows.values():
+        if r["Tipo de referência"]:
+            label, url = snapshot.sold_link(r)
+            assert url, r["ID Anúncio"]
+            assert "[eBay" in snapshot.links_cell(r, sold_mode=True)

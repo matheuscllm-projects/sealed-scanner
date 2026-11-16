@@ -181,3 +181,131 @@ def test_parser_e_coleta_filtram_outro_idioma():
 def test_bloqueio_signin():
     assert BS.is_blocked_page("Sign in or register", "https://signin.ebay.com/x")
     assert not BS.is_blocked_page("pokemon | eBay", "https://www.ebay.com/sch/i.html")
+
+
+# ── lote sem marcador explícito (revisão 2026-11-16) ───────────────────────
+@pytest.mark.parametrize("title,esperado", [
+    ("Pokemon Surging Sparks Booster Box (2)", (True, 2)),
+    ("Pokemon Surging Sparks Booster Box (x2)", (True, 2)),
+    ("Pokemon Surging Sparks Booster Box 2 pack lot", (True, 2)),
+    ("Lot of two Pokemon Surging Sparks Booster Box", (True, 2)),
+    ("Set of three Surging Sparks ETB", (True, 3)),
+    ("Pair of Surging Sparks Booster Boxes", (True, 2)),
+    ("Bundle of 4 Surging Sparks Booster Box", (True, 4)),
+    ("Bundle of five Surging Sparks Booster Box", (True, 5)),
+    ("Pokemon Surging Sparks 3 Booster Boxes", (True, 3)),
+    ("Pokemon Surging Sparks 2 ETBs", (True, 2)),
+    ("Pokemon Surging Sparks four tins", (True, 4)),
+    ("Pokemon Surging Sparks 5 Tins", (True, 5)),
+])
+def test_detect_lot_marcadores_extras(title, esperado):
+    assert SI.detect_lot(title) == esperado
+
+
+@pytest.mark.parametrize("title", [
+    "Pokemon 151 Booster Bundle Sealed",
+    "151 Pokemon Elite Trainer Box",
+    "Pokemon Scarlet & Violet 151 Booster Box",
+    "Pokemon Mega Charizard X 151 Ultra Premium Collection",
+    "Pokemon Charizard X Premium Collection",
+    "Pokemon Blister 3-Pack Sealed",
+    "Pokemon Surging Sparks Booster Box 36 Packs",
+    "Pokemon Surging Sparks Elite Trainer Box 9 packs",
+    "Pokemon 3 Pack Blister",
+    "Pokemon Booster Bundle 6 Pack Set",
+])
+def test_detect_lot_falsos_positivos_nao_viram_lote(title):
+    assert SI.detect_lot(title)[0] is False, title
+
+
+def test_detect_lot_duvida_entre_lote_e_descricao_descarta():
+    # "2 packs" num título de produto: pode ser lote de packs ou descrição -> lote SEM contagem
+    # (is_lot True, units None) = fora da mediana, nunca chute.
+    assert SI.detect_lot("Pokemon Surging Sparks 2 packs sealed") == (True, None)
+    ref = _agg([_rec("100000001", 300, is_lot=True, units_in_lot=None), _rec("100000002", 110)])
+    assert ref["entries"]["ssp-booster-box-en"]["n"] == 1
+
+
+# ── falha de coleta nunca vira referência fresca (revisão 2026-11-16) ──────
+import yaml  # noqa: E402
+
+HTML_EMPTY = "<html><body><ul></ul></body></html>"
+REG = {"skus": [{"id": "ssp-booster-box-en", "name": "Surging Sparks Booster Box (English)",
+                 "product_type": "Booster Box", "set": "Surging Sparks",
+                 "match": {"set_terms": ["surging sparks"], "type_terms": ["booster box"],
+                           "exclude_terms": []}}]}
+
+
+def _setup_builder(tmp_path, monkeypatch, fetch):
+    class FakeBrowser:
+        def __init__(self, *a, **k):
+            pass
+
+        def fetch(self, url, timeout_s=60):
+            return fetch(url)
+
+        def wait_for_login(self, *a, **k):
+            return False
+
+        def close(self):
+            pass
+    monkeypatch.setattr(BS, "SoldPageBrowser", FakeBrowser)
+    monkeypatch.setattr(BS.time, "sleep", lambda *_: None)
+    store = tmp_path / "ebay_sold.jsonl"
+    cfg = {"sold_reference": {"store_file": str(store)}, "references": {}}
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    (tmp_path / "r.yaml").write_text(yaml.safe_dump(REG), encoding="utf-8")
+    out = tmp_path / "sold_reference.json"
+    out.write_text(json.dumps({"captured_at": "2026-11-01T00:00:00Z", "entries": {}, "marker": "antigo"}),
+                   encoding="utf-8")
+    argv = ["--config", str(tmp_path / "c.yaml"), "--registry", str(tmp_path / "r.yaml"),
+            "--output", str(out), "--delay", "0"]
+    return argv, out, store
+
+
+def test_coleta_com_zero_itens_em_todas_as_paginas_nao_regrava_e_sai_com_erro(tmp_path, monkeypatch):
+    argv, out, _ = _setup_builder(tmp_path, monkeypatch, lambda url: ("t", "https://www.ebay.com/sch", HTML_EMPTY))
+    assert BS.main(argv + ["--collect"]) != 0
+    assert json.loads(out.read_text(encoding="utf-8"))["marker"] == "antigo"
+
+
+def test_coleta_bloqueada_ou_com_excecao_nao_regrava(tmp_path, monkeypatch):
+    argv, out, _ = _setup_builder(
+        tmp_path, monkeypatch, lambda url: ("Sign in or register", "https://signin.ebay.com/x", ""))
+    assert BS.main(argv + ["--collect"]) != 0
+    assert json.loads(out.read_text(encoding="utf-8"))["marker"] == "antigo"
+
+    def boom(url):
+        raise RuntimeError("timeout")
+    argv, out, _ = _setup_builder(tmp_path, monkeypatch, boom)
+    assert BS.main(argv + ["--collect"]) != 0
+    assert json.loads(out.read_text(encoding="utf-8"))["marker"] == "antigo"
+
+
+def test_coleta_ok_grava_com_captured_at_de_agora_e_registra_carimbo(tmp_path, monkeypatch):
+    html = ('<ul><li class="s-item"><a class="s-item__link" href="https://www.ebay.com/itm/257292810881">'
+            '<div class="s-item__title">Pokemon Surging Sparks Booster Box Sealed</div></a>'
+            '<span class="s-item__price">$150.00</span><div class="s-item__caption">Sold  %s</div></li></ul>')
+    from datetime import datetime, timedelta
+    d = (datetime.now() - timedelta(days=2)).strftime("%b %d, %Y")
+    argv, out, store = _setup_builder(tmp_path, monkeypatch,
+                                      lambda url: ("t", "https://www.ebay.com/sch", html % d))
+    assert BS.main(argv + ["--collect"]) == 0
+    ref = json.loads(out.read_text(encoding="utf-8"))
+    assert ref["entries"]["ssp-booster-box-en"]["usd"] == 150.0
+    assert ref["captured_at"] > "2026-11-16"
+    assert (tmp_path / "ebay_sold.last_collect.json").exists()
+
+
+def test_no_collect_usa_data_da_ultima_coleta_nao_a_do_build(tmp_path, monkeypatch):
+    argv, out, store = _setup_builder(tmp_path, monkeypatch, lambda url: ("t", "u", HTML_EMPTY))
+    (tmp_path / "ebay_sold.last_collect.json").write_text(
+        json.dumps({"collected_at": "2026-11-10T12:00:00Z"}), encoding="utf-8")
+    assert BS.main(argv + ["--no-collect"]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["captured_at"] == "2026-11-10T12:00:00Z"
+
+
+def test_no_collect_sem_carimbo_nem_store_fica_vencida(tmp_path, monkeypatch):
+    argv, out, store = _setup_builder(tmp_path, monkeypatch, lambda url: ("t", "u", HTML_EMPTY))
+    assert BS.main(argv + ["--no-collect"]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["captured_at"].startswith("1970-")

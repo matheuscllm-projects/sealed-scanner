@@ -1011,7 +1011,8 @@ def load_sold_classification_reference(config: dict, script_dir: Path) -> tuple[
               "build_sold_reference.py; neste scan só o menor BIN ativo (fallback, nunca GREEN).")
     entries: dict[str, dict] = {}
     for sid, e in ((sold or {}).get("entries") or {}).items():
-        if not isinstance(e, dict) or e.get("status") != "ok" or not e.get("usd"):
+        if (not isinstance(e, dict) or e.get("status") != "ok" or not e.get("usd")
+                or not (e.get("url") or "").strip()):
             continue
         entries[sid] = {
             "usd": float(e["usd"]), "url": e.get("url") or "", "status": "ok",
@@ -1020,7 +1021,9 @@ def load_sold_classification_reference(config: dict, script_dir: Path) -> tuple[
         }
     if c.get("fallback_to_active_bin", True):
         for sid, b in (bin_data.get("entries") or {}).items():
-            if sid in entries or not isinstance(b, dict) or b.get("status") != "ok" or not b.get("usd"):
+            # anúncio ativo SEM url não serve de fallback: a entrega exige o link de referência
+            if (sid in entries or not isinstance(b, dict) or b.get("status") != "ok"
+                    or not b.get("usd") or not (b.get("url") or "").strip()):
                 continue
             entries[sid] = {
                 "usd": float(b["usd"]), "url": b.get("url") or "", "status": "ok",
@@ -1094,7 +1097,8 @@ def apply_freshness_downgrade(rows: list, ref_data: dict, config: dict) -> int |
 
 def apply_sell_ref_plausibility_guard(rows: list, tcg_prices: dict | None,
                                       config: dict) -> dict | None:
-    """Guard de plausibilidade da referência de VENDA (modo eBay apenas).
+    """Guard de plausibilidade da referência de VENDA (modos ebay e ebay_sold; no
+    ebay_sold, 2026-11-16, vale p/ a mediana de venda realizada).
 
     Caso real (IB-07, 2026-08-24): o TCGplayer desabou de ~US$160 p/ ~US$37
     (restock), mas o menor anúncio ATIVO no eBay seguia US$78,50 — pedida órfã
@@ -1116,8 +1120,9 @@ def apply_sell_ref_plausibility_guard(rows: list, tcg_prices: dict | None,
     o RED daqui prevalece). Muta `rows` in-place; retorna stats ou None se o
     guard estiver inativo (modo tcg, sem ratio, sem preços TCG).
     """
-    if classification_reference_source(config) != "ebay" or not tcg_prices:
+    if classification_reference_source(config) not in ("ebay", "ebay_sold") or not tcg_prices:
         return None
+    kind = "Venda realizada" if classification_reference_source(config) == "ebay_sold" else "Pedida eBay"
     max_ratio = config.get("deal_criteria", {}).get("max_sell_ref_vs_tcg_ratio")
     if max_ratio is None:
         return None
@@ -1139,7 +1144,7 @@ def apply_sell_ref_plausibility_guard(rows: list, tcg_prices: dict | None,
         if margin_vs_tcg >= min_total:
             stats["kept_with_note"] += 1
             row.main_risk = (
-                f"{row.main_risk} | Pedida eBay US$ {row.us_price_usd:.2f} descolada da "
+                f"{row.main_risk} | {kind} US$ {row.us_price_usd:.2f} descolada da "
                 f"ref TCG US$ {float(tcg_usd):.2f} (>{max_ratio:.1f}x), mas a margem vs "
                 f"TCG ({margin_vs_tcg:.0%}) ainda passa o mínimo."
             )
@@ -1149,7 +1154,7 @@ def apply_sell_ref_plausibility_guard(rows: list, tcg_prices: dict | None,
             row.bucket = "rejected"
             row.reject_reason = "ref_venda_descolada_tcg"
             row.main_risk = (
-                f"Pedida eBay US$ {row.us_price_usd:.2f} descolada da ref TCG "
+                f"{kind} US$ {row.us_price_usd:.2f} descolada da ref TCG "
                 f"US$ {float(tcg_usd):.2f} (>{max_ratio:.1f}x — pedida órfã que não "
                 f"acompanhou queda de preço?) e a margem vs TCG ({margin_vs_tcg:.1%}) "
                 f"não atinge o mínimo de {min_total:.0%}. Margem oficial provável miragem."
@@ -1166,7 +1171,7 @@ def load_and_apply_sell_ref_guard(rows: list, config: dict, script_dir: Path) ->
     eBay — é o mesmo arquivo do piso anti-lixo do build_ebay_reference) e
     aplica o guard, com UMA linha auditável de status. Arquivo ausente =
     no-op honesto (nunca crash)."""
-    if classification_reference_source(config) != "ebay":
+    if classification_reference_source(config) not in ("ebay", "ebay_sold"):
         return None
     rel = (config.get("references") or {}).get("us_file") or "data/us_reference.json"
     us_data = load_json_optional(script_dir / rel)

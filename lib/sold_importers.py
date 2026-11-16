@@ -52,21 +52,33 @@ DIGITAL_TERMS = ("code card", "code cards", "online code", "e delivery", "email 
 USED_TOKENS_EN = ("opened", "open box", "empty box", "box only", "no packs", "damaged")
 
 # ── lote ──────────────────────────────────────────────────────────────────
+_NUM_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+              "nine": 9, "ten": 10}
+_NUM = r"(\d{1,3}|" + "|".join(_NUM_WORDS) + r")"
+_UNIT = r"(?:booster\s+)?(?:blisters?|box(?:es)?|etbs?|decks?|tins?|bundles?|displays?|collections?)"
 # Padrões COM quantidade (ordem = prioridade). Aplicados no título minúsculo cru.
 _LOT_QTY_PATTERNS = (
-    re.compile(r"\blot of\s*\(?(\d{1,3})\)?"),
-    re.compile(r"\bbundle of\s*(\d{1,3})\b"),
-    re.compile(r"\bset of\s*(\d{1,3})\b"),
-    re.compile(r"\b(\d{1,3})\s*x\b"),                       # "4x", "10 x"
-    re.compile(r"\bx\s*(\d{1,3})\b"),                       # "x3"
-    re.compile(r"^\(?(\d{1,3})\)?\s+pok"),                  # "4 Pokémon TCG ... Booster Packs"
-    re.compile(r"\b(\d{1,3})\s+(?:booster|sleeved|packs?|boxes|blisters?|decks?|tins?)\b.*\blot\b"),
-    # "2 Blister Set", "2 Booster Box Set", "3 Blisters Set" (anúncio 358756167166,
-    # operador 2026-10-20). Só tipos vendidos como UNIDADE: "pack"/"bundle" ficam fora
-    # ("Booster Bundle 6 Pack Set" / "Booster Box 36 Pack Set" descrevem o CONTEÚDO do
-    # produto, não um lote). "3 Pack Blister Set" NÃO casa: o tipo precisa vir colado ao "set".
-    re.compile(r"\b(\d{1,3})\s+(?:booster\s+)?(?:blisters?|box(?:es)?|etbs?|decks?|tins?)\s+set\b"),
+    re.compile(r"\blot of\s*\(?" + _NUM + r"\)?\b"),
+    re.compile(r"\bbundle of\s*" + _NUM + r"\b"),
+    re.compile(r"\bset of\s*" + _NUM + r"\b"),
+    re.compile(r"\b" + _NUM + r"\s*x\b"),                    # "4x", "10 x"
+    re.compile(r"\bx\s*(\d{1,3})\b"),                        # "x3"
+    re.compile(r"\(\s*x?\s*([2-9]|10)\s*x?\s*\)"),           # "(2)", "(x2)"
+    re.compile(r"^\(?(\d{1,3})\)?\s+pok"),                   # "4 Pokémon TCG ... Booster Packs"
+    re.compile(r"\b(\d{1,3})\s*-?\s*(?:packs?|boxes|blisters?|etbs?|tins?|bundles?|decks?)\s+lot\b"),
+    re.compile(r"\b" + _NUM + r"\s+" + _UNIT + r"\s+(?:set|lot)\b"),
+    # "3 Booster Boxes", "2 ETBs", "four tins": plural (ou sigla ETB/etbs) com contagem >= 2
+    re.compile(r"\b" + _NUM + r"\s+(?:booster\s+)?(?:boxes|etbs|tins|blisters|bundles|decks)\b"),
 )
+# "pair of" = 2.
+_PAIR_RE = re.compile(r"\bpair of\b")
+# "N packs" (plural) pode ser LOTE de packs ou DESCRIÇÃO do produto ("Booster Box 36 Packs",
+# "ETB 9 packs"). Contagens nominais conhecidas = descrição; as demais = dúvida -> lote sem
+# contagem (a venda fica FORA da mediana — nunca chute).
+_PACKS_PLURAL_RE = re.compile(r"\b(\d{1,3})\s+packs\b")
+_NOMINAL_PACK_COUNTS = frozenset({3, 4, 5, 6, 9, 10, 12, 18, 24, 36})
+# Número do set, nunca quantidade ("Scarlet & Violet 151"): removido antes de ler lote.
+_SET_NUMBER_RE = re.compile(r"\b151\b")
 # Tokens de lote SEM quantidade. NB: "bundle" sozinho é produto (Booster Bundle);
 # "3 pack blister" é produto. Só os tokens explícitos contam.
 _LOT_TOKEN_RE = re.compile(r"\blot\b|\blote\b|\bcase\b|\bbundle of\b|\bset of\b")
@@ -98,21 +110,30 @@ def non_en_marker(title: str) -> str:
     return "none"
 
 
+def _as_units(tok: str) -> int | None:
+    tok = tok.strip().lower()
+    return _NUM_WORDS.get(tok) or (int(tok) if tok.isdigit() else None)
+
+
 def detect_lot(title: str) -> tuple[bool, int | None]:
-    """(is_lot, units_in_lot). units é best-effort (informativo), None se não lido."""
-    low = (title or "").lower()
-    if not low:
+    """(is_lot, units_in_lot). units None = lote SEM contagem legível (fica fora da
+    mediana). Na dúvida entre lote e descrição do produto ("2 packs"), devolve
+    (True, None): a venda é descartada, nunca chutada."""
+    low = _SET_NUMBER_RE.sub(" ", (title or "").lower())
+    if not low.strip():
         return False, None
     for pat in _LOT_QTY_PATTERNS:
         m = pat.search(low)
         if m:
-            try:
-                units = int(m.group(1))
-            except (TypeError, ValueError):
-                units = None
-            if units is not None and units <= 1:
+            units = _as_units(m.group(1))
+            if units is None or units <= 1 or units > 100:
                 continue
             return True, units
+    if _PAIR_RE.search(low):
+        return True, 2
+    m = _PACKS_PLURAL_RE.search(low)
+    if m and int(m.group(1)) not in _NOMINAL_PACK_COUNTS and int(m.group(1)) > 1:
+        return True, None
     if _LOT_TOKEN_RE.search(low):
         return True, None
     return False, None
