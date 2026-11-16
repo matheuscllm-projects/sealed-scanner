@@ -184,10 +184,18 @@ def parse_sold_search_html(html: str) -> list[dict]:
             continue
         # "Best offer accepted": o eBay mostra o preço de LISTA riscado, não o
         # valor pago — sem preço real, não entra (visto na página real 2026-11-16).
-        if (li.select_one(".s-card__price.strikethrough, .s-item__price .STRIKETHROUGH")
-                # selo = span INTEIRO com a frase (nunca substring do título do vendedor)
-                or any(re.fullmatch(r"best offer accepted|oferta aceita", _text(sp), re.I)
-                       for sp in li.select("span"))):
+        # Riscado NO PRÓPRIO preço principal = oferta aceita. Riscado secundário ao
+        # lado ("$63.95 ~~$86.95~~") é desconto de loja com o preço pago visível —
+        # venda válida, fica (conferido na página real). O selo vale em qualquer
+        # span FORA do título (o título é texto do vendedor).
+        title_el = li.select_one(".s-item__title, .s-card__title")
+        if (li.select_one('.s-card__price[class*="strikethrough" i], '
+                          '.s-item__price[class*="strikethrough" i], '
+                          '.s-item__price [class*="strikethrough" i], .s-item__price s, '
+                          '.s-item__price del, .s-card__price s, .s-card__price del')
+                or any(re.search(r"best\s+offer\s+accepted|oferta\s+aceita", _text(sp), re.I)
+                       for sp in li.select("span")
+                       if not (title_el and (sp is title_el or title_el in sp.parents)))):
             continue
         price = parse_usd_text(_text(li.select_one(".s-item__price, .s-card__price")))
         caption = _text(li.select_one(".s-item__caption, .s-card__caption"))
