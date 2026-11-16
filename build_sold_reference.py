@@ -185,7 +185,9 @@ def parse_sold_search_html(html: str) -> list[dict]:
         # "Best offer accepted": o eBay mostra o preço de LISTA riscado, não o
         # valor pago — sem preço real, não entra (visto na página real 2026-11-16).
         if (li.select_one(".s-card__price.strikethrough, .s-item__price .STRIKETHROUGH")
-                or re.search(r"best offer accepted|oferta aceita", _text(li), re.I)):
+                # selo = span INTEIRO com a frase (nunca substring do título do vendedor)
+                or any(re.fullmatch(r"best offer accepted|oferta aceita", _text(sp), re.I)
+                       for sp in li.select("span"))):
             continue
         price = parse_usd_text(_text(li.select_one(".s-item__price, .s-card__price")))
         caption = _text(li.select_one(".s-item__caption, .s-card__caption"))
