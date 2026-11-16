@@ -327,3 +327,21 @@ def test_best_offer_aceita_fica_fora_e_titulo_sem_sufixo_de_acessibilidade():
     items = BS.parse_sold_search_html(html)
     assert [i["item_id"] for i in items] == ["222222222222"]
     assert items[0]["title"] == "Pokemon Perfect Order Elite Trainer Box"
+
+
+def test_preco_principal_riscado_em_qualquer_forma_fica_fora():
+    def card(price_html, extra=""):
+        return ('<ul><li class="s-card"><div class="s-card__title">Pokemon Perfect Order '
+                'Elite Trainer Box best offer accepted fast</div>' + price_html + extra +
+                '<div class="s-card__caption"><span>Sold Nov 15, 2026</span></div>'
+                '<a class="su-link" href="https://www.ebay.com/itm/333333333333">x</a></li></ul>')
+    for struck in ('<span class="s-card__price"><span class="STRIKETHROUGH">$94.40</span></span>',
+                   '<s class="s-card__price">$94.40</s>',
+                   '<span class="s-item__price"><del>$94.40</del></span>'):
+        assert BS.parse_sold_search_html(card(struck)) == []
+    # desconto de loja: preço pago visível + antigo riscado AO LADO -> venda válida;
+    # a frase no TÍTULO (texto do vendedor) não descarta a venda.
+    ok = BS.parse_sold_search_html(card(
+        '<span class="s-card__price">$63.95</span>',
+        '<span class="su-styled-text secondary strikethrough large">$86.95</span>'))
+    assert [i["price_usd"] for i in ok] == [63.95]

@@ -150,6 +150,11 @@ def parse_usd_text(text: str) -> float | None:
 
 _ITEM_ID_RE = re.compile(r"/itm/(?:[^/?#]+/)?(\d+)")
 _PLACEHOLDER_TITLES = ("shop on ebay", "compre no ebay")
+# Preço PRINCIPAL riscado, nos dois layouts: o próprio nó, um filho, ou tag s/del.
+_STRUCK_PRICE_SEL = ", ".join(
+    f'{p}[class*="strikethrough" i], {p} [class*="strikethrough" i], '
+    f'{p} s, {p} del, s{p}, del{p}'
+    for p in (".s-item__price", ".s-card__price"))
 
 
 def _text(el) -> str:
@@ -188,14 +193,12 @@ def parse_sold_search_html(html: str) -> list[dict]:
         # lado ("$63.95 ~~$86.95~~") é desconto de loja com o preço pago visível —
         # venda válida, fica (conferido na página real). O selo vale em qualquer
         # span FORA do título (o título é texto do vendedor).
-        title_el = li.select_one(".s-item__title, .s-card__title")
-        if (li.select_one('.s-card__price[class*="strikethrough" i], '
-                          '.s-item__price[class*="strikethrough" i], '
-                          '.s-item__price [class*="strikethrough" i], .s-item__price s, '
-                          '.s-item__price del, .s-card__price s, .s-card__price del')
-                or any(re.search(r"best\s+offer\s+accepted|oferta\s+aceita", _text(sp), re.I)
+        title_els = li.select(".s-item__title, .s-card__title, .s-item__subtitle, .s-card__subtitle")
+        if (li.select_one(_STRUCK_PRICE_SEL)
+                # selo = span INTEIRO com a frase, fora de qualquer nó de título
+                or any(re.fullmatch(r"best\s+offer\s+accepted|oferta\s+aceita", _text(sp), re.I)
                        for sp in li.select("span")
-                       if not (title_el and (sp is title_el or title_el in sp.parents)))):
+                       if not any(sp is t or t in sp.parents for t in title_els))):
             continue
         price = parse_usd_text(_text(li.select_one(".s-item__price, .s-card__price")))
         caption = _text(li.select_one(".s-item__caption, .s-card__caption"))
