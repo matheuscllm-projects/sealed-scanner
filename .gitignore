@@ -33,6 +33,10 @@ results/
 # EBAY_CLIENT_ID/SECRET — nunca versionar (a us_reference.json continua versionada)
 data/ebay_reference*.json
 
+# Referência de VENDA REALIZADA (eBay vendidos): dado volátil, gerado por
+# build_sold_reference.py (o store vive em data/history/, já ignorado)
+data/sold_reference*.json
+
 # Camada de análise (hold vs sell): séries/imports/log de previsões e caches
 # são DADO de mercado — fora do repo público (set_meta e events_*.yaml são
 # referência curada e CONTINUAM versionados)

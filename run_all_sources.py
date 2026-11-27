@@ -100,7 +100,8 @@ def _scan_one(source: str, config, registry, registry_raw, us_reference,
             time.sleep(3)
 
 
-def _write_unified(all_rows: list, summaries: list[dict], out_dir: Path, stamp: str) -> Path | None:
+def _write_unified(all_rows: list, summaries: list[dict], out_dir: Path, stamp: str,
+                   columns: list | None = None) -> Path | None:
     """Escreve unified_deals.csv + .xlsx com todas as fontes numa tabela só."""
     # Ordena: bucket (GREEN→YELLOW→RED), depois margem total desc.
     def sort_key(r):
@@ -111,7 +112,8 @@ def _write_unified(all_rows: list, summaries: list[dict], out_dir: Path, stamp: 
     all_rows = sorted(all_rows, key=sort_key)
 
     csv_path = out_dir / "unified_deals.csv"
-    s.write_csv(all_rows, csv_path)
+    columns = columns or s.CSV_COLUMNS
+    s.write_csv(all_rows, csv_path, columns)
 
     xlsx_path = out_dir / f"unified_sealed_{stamp}.xlsx"
     try:
@@ -120,7 +122,7 @@ def _write_unified(all_rows: list, summaries: list[dict], out_dir: Path, stamp: 
         wb = Workbook()
         ws = wb.active
         ws.title = "Todos os Deals"
-        ws.append([label for _, label in s.CSV_COLUMNS])
+        ws.append([label for _, label in columns])
         for c in ws[1]:
             c.font = Font(bold=True)
         fills = {
@@ -129,13 +131,13 @@ def _write_unified(all_rows: list, summaries: list[dict], out_dir: Path, stamp: 
             "rejected": PatternFill("solid", fgColor="F2F2F2"),
         }
         for row in all_rows:
-            ws.append([s.cell_value(row, key) for key, _ in s.CSV_COLUMNS])
+            ws.append([s.cell_value(row, key) for key, _ in columns])
             fill = fills.get(row.bucket)
             if fill:
                 for c in ws[ws.max_row]:
                     c.fill = fill
         # larguras
-        for idx, (key, label) in enumerate(s.CSV_COLUMNS, start=1):
+        for idx, (key, label) in enumerate(columns, start=1):
             from openpyxl.utils import get_column_letter
             ws.column_dimensions[get_column_letter(idx)].width = max(12, min(46, len(label) + 4))
         ws.freeze_panes = "A2"
@@ -167,8 +169,8 @@ def run(args: argparse.Namespace) -> int:
     registry_data = s.load_yaml(Path(args.registry), "sku_registry.yaml")
     registry = s.build_registry(registry_data)
     registry_raw = registry_data.get("skus", [])
-    # Referência de CLASSIFICAÇÃO: TCGplayer (default) ou eBay, conforme
-    # references.classification_source do perfil (One Piece = ebay, 2026-08-15).
+    # Referência de CLASSIFICAÇÃO conforme references.classification_source do
+    # perfil: tcg (One Piece) | ebay | ebay_sold (Pokémon: venda realizada no eBay).
     ref_data, us_reference = s.load_classification_reference(config, SCRIPT_DIR)
     print(f"  [ref] classificação vs {s.classification_reference_label(config)} "
           f"({len(us_reference)} SKUs com preço)")
@@ -205,6 +207,11 @@ def run(args: argparse.Namespace) -> int:
     # single-source (load_and_apply_sell_ref_guard).
     s.load_and_apply_sell_ref_guard(all_rows, config, SCRIPT_DIR)
 
+    # Modo ebay_sold (Pokémon): guards de confiança (amostra fina / fallback nunca
+    # GREEN) + colunas de venda e TCG informativo — ANTES do freshness. MESMO
+    # caminho único do single-source; no-op nos demais modos.
+    s.load_and_apply_sold(all_rows, ref_data, config, SCRIPT_DIR)
+
     stale_age = s.apply_freshness_downgrade(all_rows, ref_data, config)
     if stale_age is not None:
         max_age = config.get("deal_criteria", {}).get("max_reference_age_days", 14)
@@ -239,7 +246,7 @@ def run(args: argparse.Namespace) -> int:
     # heurística de "dir mais novo" que erra sob escrita concorrente).
     print(f"UNIFIED_OUT_DIR={out_dir}")
 
-    xlsx_path = _write_unified(all_rows, summaries, out_dir, stamp)
+    xlsx_path = _write_unified(all_rows, summaries, out_dir, stamp, s.csv_columns(config))
 
     # Sidecar run_meta.json — a ROTA e as referências deste run, legíveis por
     # snapshot.py (cabeçalho) e pelo painel local. Best-effort: falha aqui não
@@ -252,8 +259,8 @@ def run(args: argparse.Namespace) -> int:
             "route_name": route.get("name", ""),
             "route_label": route.get("label", ""),
             "sell_reference": route.get("sell_reference", ""),
-            # 'tcg' (default) ou 'ebay' — snapshot.py usa p/ rotular a coluna
-            # de referência e as notas (One Piece = ebay, operador 2026-08-15).
+            # 'tcg' (One Piece), 'ebay' ou 'ebay_sold' (Pokémon, venda realizada) —
+            # snapshot.py usa p/ rotular as colunas de referência e as notas.
             "classification_reference": s.classification_reference_source(config),
             "sources": sources,
             "fx": config["currency"]["usd_brl"],

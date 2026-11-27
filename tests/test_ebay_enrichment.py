@@ -144,6 +144,14 @@ def _run_orchestrator(tmp_path, monkeypatch, with_ebay: bool):
     today = S.datetime.now(S.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     (tmp_path / "data" / "us_reference.json").write_text(
         json.dumps({"captured_at": today, "prices": {SKU_ID: 200.0}}), encoding="utf-8")
+
+    # Operador 2026-11-16: o perfil Pokémon classifica pela VENDA REALIZADA
+    # (classification_source: ebay_sold) — referência de venda PINADA (n=3, GREEN
+    # robusto); o us_reference acima vira só informativo (Ref. TCG).
+    (tmp_path / "data" / "sold_reference.json").write_text(
+        json.dumps({"captured_at": today, "min_sales_for_green": 2, "entries": {SKU_ID: {
+            "usd": 200.0, "n": 3, "status": "ok", "thin": False, "last_sold": "2026-11-10",
+            "url": "https://www.ebay.com/itm/111111111111"}}}), encoding="utf-8")
     if with_ebay:
         (tmp_path / "data" / "ebay_reference.json").write_text(
             json.dumps(_ebay_data(usd=250.0, captured_at=today)), encoding="utf-8")

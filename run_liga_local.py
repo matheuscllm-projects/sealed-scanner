@@ -93,27 +93,40 @@ def check_environment() -> bool:
 # os builders nunca sobrescrevem o arquivo anterior num run degradado (regra
 # inviolável nº 8), então o pior caso é a degradação honesta de sempre.
 REFRESH_TIMEOUT_S = 1800
+# Coleta de vendidos = 1 página do eBay por SKU no Chrome visível (+ espera de login).
+SOLD_REFRESH_TIMEOUT_S = 7200
 
 
 def refresh_references(game: str, *, python: str | None = None,
                        runner=subprocess.call) -> dict[str, str]:
-    """Reconstrói referência US (classifica) e eBay (venda, informativa).
+    """Reconstrói as referências do perfil, na ordem: US/TCGplayer -> eBay (menor
+    anúncio ativo) -> VENDA REALIZADA (só no perfil com classification_source:
+    ebay_sold, hoje o Pokémon; lê o BIN ativo como fallback e coleta os vendidos
+    no Chrome logado do operador).
 
     Devolve {builder: status} com status em {"ok", "falhou", "erro"}.
     NUNCA levanta exceção: a entrega não pode morrer por causa do refresh.
     """
+    import yaml  # type: ignore[import-untyped]
     python = python or sys.executable
     results: dict[str, str] = {}
+    cfg_name = {"pokemon": "config.yaml", "onepiece": "config_onepiece.yaml"}[game]
+    src = str(((yaml.safe_load((SEALED / cfg_name).read_text(encoding="utf-8")) or {})
+               .get("references") or {}).get("classification_source") or "tcg").lower()
     builders = [
-        ("build_us_reference.py", "referência US (TCGplayer — CLASSIFICA)"),
-        ("build_ebay_reference.py", "referência de venda eBay (informativa)"),
+        ("build_us_reference.py", "referência US (TCGplayer)", REFRESH_TIMEOUT_S),
+        ("build_ebay_reference.py", "referência eBay (menor anúncio ativo — fallback)", REFRESH_TIMEOUT_S),
     ]
-    for script, label in builders:
+    if src == "ebay_sold":
+        builders.append(("build_sold_reference.py",
+                         "referência de VENDA REALIZADA no eBay (CLASSIFICA — coleta no Chrome logado)",
+                         SOLD_REFRESH_TIMEOUT_S))
+    for script, label, timeout in builders:
         print(f"  → {label}")
         try:
             rc = runner(
                 [python, str(SEALED / script), "--game", game],
-                cwd=ROOT, timeout=REFRESH_TIMEOUT_S,
+                cwd=ROOT, timeout=timeout,
             )
             if rc == 0:
                 results[script] = "ok"
@@ -155,7 +168,7 @@ def main() -> int:
                         "analysis.enabled do config. Falha da análise NUNCA derruba "
                         "o scan (só avisa). --no-analise desliga neste run.")
     p.add_argument("--refresh-refs", action=argparse.BooleanOptionalAction, default=True,
-                   help="Reconstruir as referências (TCGplayer + eBay) ANTES do scan. "
+                   help="Reconstruir as referências (TCGplayer + eBay + venda realizada) ANTES do scan. "
                         "LIGADO por default: o config exige referência do DIA "
                         "(deal_criteria.max_reference_age_days) e referência vencida "
                         "rebaixa GREEN->YELLOW. Falha do refresh NUNCA derruba o scan "
