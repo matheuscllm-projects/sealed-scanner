@@ -1,8 +1,9 @@
-<!-- FLEET:ESTILO-RESPOSTA v1 (2026-09-14) — cópia-mestra: scanners-commons/08-ESTILO-RESPOSTA.md. Editar LÁ e replicar; não divergir nesta cópia. -->
+<!-- FLEET:ESTILO-RESPOSTA v2 (2026-11-27) — cópia-mestra: scanners-commons/08-ESTILO-RESPOSTA.md. Editar LÁ e replicar; não divergir nesta cópia. -->
 > **Estilo de resposta obrigatório (operador, 2026-09-14): CONCISO — teto de 200 palavras.**
 > Toda resposta no chat, nesta ordem: **1) Objetivo** — 1 linha do que foi pedido · **2) O que foi feito** — bullets curtos, cada um com o *porquê* da decisão · **3) Dependências/pendências** — o que falta, o que bloqueia, de quem depende (`nenhuma` quando não houver).
 > O teto conta **só prosa**. **Fora do teto** (nunca resumir, cortar nem "amostrar" pra caber): a tabela de entrega gerada pela ferramenta do repo (colada VERBATIM), blocos de comando/código, saída de teste colada como prova e artefato canônico do repo (brief, relatório, análise).
 > Sem preâmbulo, sem repetir o pedido, sem recapitular o que já foi dito. Não cabe em 200 palavras? Entregue o essencial dentro do teto e ofereça o detalhe ("quer o detalhe de X?") — nunca estoure em silêncio.
+> **Entendi antes de executar (v2):** pedido longo (mais de 3 frases), brain dump ou várias tarefas misturadas → antes de executar, devolva em até 3 linhas `Entendi: …` e espere o ok. Pedido curto e claro vai direto. Sem o operador presente (rotina, thread autônoma): escreva o `Entendi` no topo e siga na leitura mais provável.
 
 > **Regra vigente de entrega:** [DELIVERY_CHAT.md](DELIVERY_CHAT.md). Resultados somente no chat, referência clicável e coleta nova por solicitação; substitui orientações antigas de entrega via GitHub ou preços reutilizados.
 
